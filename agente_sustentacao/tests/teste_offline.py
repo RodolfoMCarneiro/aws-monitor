@@ -161,7 +161,7 @@ assert "desconhecida" in executar("s3_delete", "{}", set())
 import agente  # noqa: E402
 
 chamadas = []
-agente.litellm.completion = lambda **kw: chamadas.append(kw) or NS(choices=[NS(message=NS(content="## Resumo executivo\nOK", tool_calls=None))])
+agente._completar = lambda **kw: chamadas.append(kw) or NS(choices=[NS(message=NS(content="## Resumo executivo\nOK", tool_calls=None))])
 md, trace = agente.analisar(c)
 assert md.startswith("## Resumo"), md
 assert "tools" not in chamadas[0], "sem tools registradas, nada é exposto ao LLM"

@@ -1,8 +1,9 @@
-"""Loop do agente com LiteLLM: o LLM analisa a coleta (e detalha IDs via tools, se houver)."""
+"""Loop do agente: o LLM (via proxy LiteLLM, API compatível com OpenAI) analisa a coleta
+(e detalha IDs via tools, se houver)."""
 import json
 import sys
 
-import litellm
+from openai import OpenAI
 
 from config import CFG
 from tools import TOOLS, executar
@@ -54,13 +55,24 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
+_client: OpenAI | None = None
+
+
+def _cliente() -> OpenAI:
+    global _client
+    if _client is None:
+        if not CFG.api_base:
+            raise RuntimeError("LLM_API_BASE não definido: informe a URL do proxy LiteLLM.")
+        _client = OpenAI(base_url=CFG.api_base, api_key=CFG.api_key or "sem-chave")
+    return _client
+
+
+def _completar(**kw):
+    return _cliente().chat.completions.create(**kw)
+
+
 def _kwargs() -> dict:
-    kw = {"model": CFG.modelo, "temperature": 0.2}
-    if CFG.api_base:
-        kw["api_base"] = CFG.api_base
-    if CFG.api_key:
-        kw["api_key"] = CFG.api_key
-    return kw
+    return {"model": CFG.modelo, "temperature": 0.2}
 
 
 def _assistant_msg(msg) -> dict:
@@ -91,7 +103,7 @@ def analisar(coleta: dict) -> tuple[str, list[dict]]:
 
     for i in range(CFG.max_iteracoes):
         _log(f"[llm] iteração {i + 1}")
-        msg = litellm.completion(messages=messages, **kw).choices[0].message
+        msg = _completar(messages=messages, **kw).choices[0].message
         messages.append(_assistant_msg(msg))
         if not msg.tool_calls:
             return msg.content or "", messages
@@ -100,13 +112,12 @@ def analisar(coleta: dict) -> tuple[str, list[dict]]:
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
-                "name": tc.function.name,
                 "content": executar(tc.function.name, tc.function.arguments, ids_permitidos),
             })
 
     _log("[llm] limite de iterações atingido; pedindo relatório final")
     messages.append({"role": "user", "content": "Limite de investigação atingido. Escreva agora o relatório final com o que já tem, registrando o que ficou pendente em 'Lacunas'."})
     kw.pop("tools", None)
-    msg = litellm.completion(messages=messages, **kw).choices[0].message
+    msg = _completar(messages=messages, **kw).choices[0].message
     messages.append(_assistant_msg(msg))
     return msg.content or "", messages

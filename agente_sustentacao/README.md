@@ -1,6 +1,6 @@
 # Agente de sustentação do data lake (AWS)
 
-Automatiza a rotina matinal da sustentação: verifica a última execução de cada pipeline, investiga cada falha até o log do Spark e gera um diagnóstico com plano de ação usando um LLM (GLM via LiteLLM).
+Automatiza a rotina matinal da sustentação: verifica a última execução de cada pipeline, investiga cada falha até o log do Spark e gera um diagnóstico com plano de ação usando um LLM (GLM via proxy LiteLLM, chamado com o SDK `openai`).
 
 ## Rotina que o agente reproduz
 
@@ -76,8 +76,8 @@ aws sso login --profile seu-perfil
 | `INDICE_METRICAS` | last_updated_date-metric-index | GSI por data |
 | `MAX_DOSSIES` | 30 | máximo de falhas detalhadas por execução |
 | `MAX_MB_LOG` | 20 | logs maiores que isso no S3 não são lidos |
-| `LLM_MODEL` | litellm_proxy/glm-4.6 | modelo no formato LiteLLM |
-| `LLM_API_BASE` | – | URL do proxy LiteLLM |
+| `LLM_MODEL` | glm-5.2 | nome do modelo exposto no proxy |
+| `LLM_API_BASE` | – (obrigatório) | URL do proxy LiteLLM (compatível com OpenAI) |
 | `LLM_API_KEY` | – | chave do proxy |
 | `MAX_ITERACOES` | 12 | limite de rodadas com o LLM |
 | `MAX_CHARS_TOOL` | 12000 | tamanho máximo do retorno de cada tool |

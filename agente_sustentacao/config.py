@@ -52,8 +52,8 @@ class Config:
     max_dossies: int = int(os.getenv("MAX_DOSSIES", "30"))
     max_mb_log: float = float(os.getenv("MAX_MB_LOG", "20"))
 
-    # LiteLLM: ex. "litellm_proxy/glm-4.6" (proxy) ou "openai/glm-4.6" + api_base
-    modelo: str = os.getenv("LLM_MODEL", "litellm_proxy/glm-4.6")
+    # Proxy LiteLLM (API compatível com OpenAI): nome do modelo como exposto no proxy
+    modelo: str = os.getenv("LLM_MODEL", "glm-5.2")
     api_base: str | None = os.getenv("LLM_API_BASE")
     api_key: str | None = os.getenv("LLM_API_KEY")
 

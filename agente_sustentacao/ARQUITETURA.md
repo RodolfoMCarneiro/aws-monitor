@@ -47,7 +47,7 @@ agente_sustentacao/
 ├── main.py              # CLI
 ├── config.py            # variáveis de ambiente + ETAPAS
 ├── util.py              # sessão boto3, agora_utc, truncamento, extração de IDs
-├── agente.py            # prompt + loop LiteLLM
+├── agente.py            # prompt + loop do LLM (SDK openai → proxy LiteLLM)
 ├── relatorio.py         # relatório Markdown determinístico
 ├── tools/
 │   ├── __init__.py      # coletar(), registro de tools de detalhe (vazio), executar()
@@ -115,7 +115,7 @@ Lista ordenada de `(regex, categoria, ação)`; o primeiro que casar vence. Cate
 
 ## 9. Testes
 
-`tests/teste_offline.py` substitui o boto3 por clients falsos e o LiteLLM por uma resposta fixa. Cobre:
+`tests/teste_offline.py` substitui o boto3 por clients falsos e a chamada ao LLM por uma resposta fixa. Cobre:
 
 - Triagem: OK, FALHA, TRAVADO, NAO_EXECUTOU (por data e por dependência), etapa legada ignorada, criptografia com `sm_b` antiga.
 - Dossiê: escolha da execução certa, ARN da execução, stderr do step em cluster mode, busca do log do driver, classificação ORIGEM_AUSENTE, aviso quando não há métrica, log completo fora da coleta.

@@ -31,7 +31,7 @@ def main() -> None:
         print(pasta / f"resumo_{ts}.md")
         return
 
-    from agente import analisar  # import tardio: --sem-llm não exige litellm
+    from agente import analisar  # import tardio: --sem-llm não exige openai
 
     relatorio, trace = analisar(coleta)
     (pasta / f"trace_{ts}.json").write_text(json.dumps(trace, default=str, ensure_ascii=False, indent=2), encoding="utf-8")
