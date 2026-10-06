@@ -1,0 +1,874 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Painel de Sustentação</title>
+<!--
+  ESBOÇO de interface. Todos os dados estão fixos neste arquivo (DADOS e DIAGNOSTICOS no script).
+  Na versão com FastAPI, cada bloco marcado com "API:" vira uma chamada:
+    - Visão geral    -> coleta do fluxo --sem-llm (coletar() + saída de pipelines_triagem/gerar_dossies)
+    - Histórico      -> coletas anteriores salvas em saida/coleta_*.json
+    - Investigação   -> análise LLM de UMA falha por vez (agente.analisar com a coleta filtrada)
+    - Avaliação      -> parecer do analista sobre cada diagnóstico
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: painel operacional. Cabeçalho fixo com abas; visão geral = números > gráficos > tabela;
+   investigação = lista de falhas à esquerda, fila de análises à direita (empilha no celular). */
+:root {
+  --bg: #f3f5f8;
+  --surface: #ffffff;
+  --surface-2: #edf0f4;
+  --fg: #121821;
+  --fg-2: #4a5462;
+  --muted: #747f8d;
+  --line: #dce1e8;
+  --grid: #e6e9ee;
+  --accent: #1f5fbf;
+  --accent-soft: #e2ebf9;
+  --accent-ink: #ffffff;
+  --st-falha: #d03b3b;
+  --st-travado: #ec835a;
+  --st-naoexec: #fab219;
+  --st-ok: #0ca30c;
+  --st-exec: #2a78d6;
+  --st-semdados: #898781;
+  --ok-ink: #006300;
+  --bad-ink: #b42323;
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --r: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1217; --surface: #161b22; --surface-2: #1d232c; --fg: #edf0f4; --fg-2: #b4bdc9;
+    --muted: #808b99; --line: #29303a; --grid: #232a33; --accent: #5b93e8; --accent-soft: #1b2940;
+    --accent-ink: #0e1217; --st-exec: #3987e5; --ok-ink: #0ca30c; --bad-ink: #f07070; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1217; --surface: #161b22; --surface-2: #1d232c; --fg: #edf0f4; --fg-2: #b4bdc9;
+  --muted: #808b99; --line: #29303a; --grid: #232a33; --accent: #5b93e8; --accent-soft: #1b2940;
+  --accent-ink: #0e1217; --st-exec: #3987e5; --ok-ink: #0ca30c; --bad-ink: #f07070; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font-ui); }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); font-size: 12.5px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---------- cabeçalho ---------- */
+header.top {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 10;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.wrap { max-width: 1280px; margin: 0 auto; padding-inline: 16px; }
+.top-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding-block: 12px 0; }
+.brand { display: flex; flex-direction: column; min-width: 0; }
+.brand h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+.brand .meta { color: var(--muted); font-size: 12.5px; }
+.top-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tag-exemplo {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-2);
+  border: 1px dashed var(--line); padding: 2px 8px; border-radius: 99px;
+}
+.tabs { display: flex; gap: 4px; margin-top: 8px; overflow-x: auto; }
+.tab {
+  appearance: none; border: 0; background: none; cursor: pointer; padding: 10px 14px 11px;
+  color: var(--fg-2); font-weight: 500; border-bottom: 2px solid transparent; white-space: nowrap;
+}
+.tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.tab .count {
+  margin-left: 6px; font-size: 11.5px; padding: 1px 7px; border-radius: 99px;
+  background: var(--surface-2); color: var(--fg-2);
+}
+
+.btn {
+  appearance: none; border: 1px solid var(--line); background: var(--surface); color: var(--fg);
+  padding: 7px 12px; border-radius: var(--r); cursor: pointer; font-weight: 500; font-size: 13px;
+}
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+.btn.sm { padding: 4px 9px; font-size: 12.5px; }
+
+main { padding-block: 20px 48px; }
+section.panel[hidden] { display: none; }
+
+/* ---------- pills de situação ---------- */
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500;
+  padding: 2px 9px 2px 7px; border-radius: 99px; background: var(--surface-2); color: var(--fg); white-space: nowrap;
+}
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--c, var(--muted)); }
+.pill[data-s="FALHA"] { --c: var(--st-falha); }
+.pill[data-s="TRAVADO"] { --c: var(--st-travado); }
+.pill[data-s="NAO_EXECUTOU"] { --c: var(--st-naoexec); }
+.pill[data-s="SEM_DADOS"] { --c: var(--st-semdados); }
+.pill[data-s="EXECUTANDO"] { --c: var(--st-exec); }
+.pill[data-s="OK"] { --c: var(--st-ok); }
+.cat { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .02em; color: var(--fg-2); }
+
+/* ---------- visão geral ---------- */
+.kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px; background: var(--line);
+  border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.kpi { background: var(--surface); padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.kpi .lbl { font-size: 12px; color: var(--fg-2); display: flex; align-items: center; gap: 6px; }
+.kpi .lbl i { width: 8px; height: 8px; border-radius: 2px; background: var(--c); display: inline-block; }
+.kpi .val { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+.kpi .sub { font-size: 12px; color: var(--muted); }
+.kpi .sub b { font-weight: 500; }
+.delta-up-bad { color: var(--bad-ink); }
+.delta-down-good { color: var(--ok-ink); }
+.kpi.alert { box-shadow: inset 3px 0 0 var(--st-falha); }
+
+.grid-charts { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; min-width: 0; }
+.card h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.card .hint { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; font-size: 12px; color: var(--fg-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.chart { position: relative; margin-top: 8px; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { fill: var(--muted); font: 11px var(--font-ui); font-variant-numeric: tabular-nums; }
+.chart .gridline { stroke: var(--grid); stroke-width: 1; }
+.chart .base { stroke: var(--line); stroke-width: 1; }
+.chart .col-hit { fill: transparent; cursor: default; }
+.chart .col-hit:hover { fill: var(--surface-2); }
+.tip {
+  position: absolute; pointer-events: none; background: var(--fg); color: var(--bg); padding: 8px 10px;
+  border-radius: 6px; font-size: 12px; line-height: 1.45; min-width: 140px; transform: translate(-50%, -100%);
+  white-space: nowrap; z-index: 5;
+}
+.tip b { font-weight: 600; }
+.tip .row { display: flex; justify-content: space-between; gap: 14px; }
+.tip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 6px; }
+
+.hbars { display: grid; gap: 8px; margin-top: 14px; }
+.hbar { display: grid; grid-template-columns: 128px minmax(0, 1fr) 28px; gap: 10px; align-items: center; font-size: 12.5px; }
+.hbar .name { color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar .track { height: 14px; background: var(--surface-2); border-radius: 0 4px 4px 0; position: relative; }
+.hbar .fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 0 4px 4px 0; }
+.hbar .v { text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); font-weight: 500; }
+.split { display: grid; grid-template-columns: 1fr; gap: 20px; }
+.split h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 500; }
+
+.tbl-wrap { overflow-x: auto; margin-top: 12px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.table-card { margin-top: 16px; }
+.pipes { display: flex; flex-wrap: wrap; gap: 4px; }
+.pipes code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-2); padding: 1px 6px; border-radius: 4px; }
+.link { color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; font-weight: 500; text-decoration: underline; text-underline-offset: 2px; }
+
+/* ---------- investigação ---------- */
+.inv { display: grid; grid-template-columns: minmax(0, 400px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.sel-card { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 110px); }
+.sel-tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.chip {
+  appearance: none; border: 1px solid var(--line); background: var(--surface); border-radius: 99px;
+  padding: 3px 10px; font-size: 12px; cursor: pointer; color: var(--fg-2);
+}
+.chip:hover { background: var(--surface-2); }
+.sel-list { list-style: none; margin: 12px 0 0; padding: 0; border-top: 1px solid var(--line); max-height: 58vh; overflow-y: auto; }
+.sel-list li { border-bottom: 1px solid var(--line); }
+.sel-list label { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; padding: 10px 2px; cursor: pointer; }
+.sel-list label:hover { background: var(--surface-2); }
+.sel-list input { margin: 3px 0 0; accent-color: var(--accent); width: 16px; height: 16px; }
+.sel-list .t { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sel-list .t strong { font-family: var(--font-mono); font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sel-list .d { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.sel-list .state { font-size: 11.5px; color: var(--accent); }
+.sel-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.sel-foot .muted { color: var(--muted); font-size: 12.5px; }
+
+.queue { display: grid; gap: 16px; }
+.empty {
+  border: 1px dashed var(--line); border-radius: var(--r); padding: 28px 24px; color: var(--fg-2); background: var(--surface);
+}
+.empty h2 { margin: 0 0 6px; font-size: 15px; color: var(--fg); }
+.empty ol { margin: 8px 0 0; padding-left: 20px; }
+
+.an { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.an-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.an-head h3 { margin: 0; font-family: var(--font-mono); font-size: 14px; font-weight: 500; }
+.an-head .ctx { color: var(--muted); font-size: 12.5px; }
+.an-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.steps { display: flex; gap: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--surface-2); font-size: 12px; overflow-x: auto; }
+.step { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+.step + .step::before { content: ""; width: 22px; height: 1px; background: var(--line); margin: 0 10px; }
+.step i { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--line); display: inline-grid; place-items: center; font-style: normal; font-size: 9px; }
+.step.done { color: var(--fg-2); }
+.step.done i { background: var(--st-ok); border-color: var(--st-ok); color: #fff; }
+.step.now { color: var(--fg); font-weight: 500; }
+.step.now i { border-color: var(--accent); border-top-color: transparent; animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .step.now i { animation: none; border-top-color: var(--accent); } }
+
+.an-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
+.an-col { padding: 14px 16px; min-width: 0; }
+.an-col + .an-col { border-left: 1px solid var(--line); }
+.an-col h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 500; }
+dl.kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: 12.5px; }
+dl.kv dt { color: var(--muted); }
+dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+pre.log {
+  margin: 10px 0 0; padding: 10px; background: var(--surface-2); border-radius: 4px; font: 11.5px/1.5 var(--font-mono);
+  overflow-x: auto; white-space: pre; color: var(--fg-2); max-height: 180px;
+}
+.diag p { margin: 0 0 8px; }
+.diag .cause { font-size: 14px; font-weight: 500; margin-bottom: 6px; }
+.conf { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--fg-2); }
+.conf b { display: inline-flex; gap: 2px; }
+.conf b span { width: 10px; height: 6px; border-radius: 1px; background: var(--line); }
+.conf b span.on { background: var(--accent); }
+.diag ul { margin: 4px 0 10px; padding-left: 18px; }
+.diag li { margin-bottom: 2px; }
+.diag .group { background: var(--accent-soft); border-radius: 4px; padding: 8px 10px; font-size: 12.5px; margin-bottom: 10px; }
+.plan { width: 100%; font-size: 12.5px; margin-top: 4px; }
+.plan td, .plan th { padding: 6px 8px; }
+.prio { font-family: var(--font-mono); font-size: 11.5px; font-weight: 500; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
+.skeleton { display: grid; gap: 8px; }
+.skeleton span { height: 10px; border-radius: 3px; background: var(--surface-2); }
+.skeleton span:nth-child(2) { width: 85%; } .skeleton span:nth-child(3) { width: 60%; } .skeleton span:nth-child(4) { width: 75%; }
+.waiting { color: var(--muted); font-size: 12.5px; margin-bottom: 10px; }
+
+.eval { border-top: 1px solid var(--line); padding: 14px 16px; display: grid; gap: 12px; background: var(--surface); }
+.eval h4 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 500; }
+.eval-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field > span { font-size: 12px; color: var(--fg-2); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; flex-wrap: wrap; }
+.seg label { cursor: pointer; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg span { display: block; padding: 6px 10px; font-size: 12.5px; border-right: 1px solid var(--line); }
+.seg label:last-child span { border-right: 0; }
+.seg input:checked + span { background: var(--accent-soft); color: var(--fg); font-weight: 500; }
+.seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
+select, textarea, input[type="text"] {
+  border: 1px solid var(--line); background: var(--surface); border-radius: var(--r); padding: 6px 8px; font-size: 13px; width: 100%;
+}
+textarea { min-height: 60px; resize: vertical; }
+.eval-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.saved { font-size: 12.5px; color: var(--ok-ink); }
+.eval[aria-disabled="true"] { opacity: .5; pointer-events: none; }
+
+.toast {
+  position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+  background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 6px; font-size: 13px; z-index: 20;
+}
+
+@media (max-width: 1080px) {
+  .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid-charts { grid-template-columns: minmax(0, 1fr); }
+  .inv { grid-template-columns: minmax(0, 1fr); }
+  .sel-card { position: static; }
+  .sel-list { max-height: none; }
+}
+@media (max-width: 720px) {
+  .an-body { grid-template-columns: minmax(0, 1fr); }
+  .an-col + .an-col { border-left: 0; border-top: 1px solid var(--line); }
+  .eval-row { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 520px) {
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi .val { font-size: 26px; }
+  .hbar { grid-template-columns: 104px minmax(0, 1fr) 24px; }
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="top-row">
+      <div class="brand">
+        <h1>Sustentação do data lake</h1>
+        <!-- API: GET /coletas/ultima -> regiao, gerado_em_utc -->
+        <span class="meta num" id="meta"></span>
+      </div>
+      <div class="top-actions">
+        <span class="tag-exemplo">Dados de exemplo</span>
+        <!-- API: POST /coletas -> roda o fluxo --sem-llm (coletar + resumo_md) -->
+        <button class="btn" id="btn-coleta" type="button">Atualizar coleta</button>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Seções">
+      <button class="tab" role="tab" id="tab-visao" aria-controls="visao" aria-selected="true" type="button">Visão geral</button>
+      <button class="tab" role="tab" id="tab-investigacao" aria-controls="investigacao" aria-selected="false" type="button">Investigação<span class="count num" id="count-inv"></span></button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ================= ABA 1: VISÃO GERAL ================= -->
+  <section class="panel" id="visao" role="tabpanel" aria-labelledby="tab-visao">
+    <div class="kpis" id="kpis"></div>
+
+    <div class="grid-charts">
+      <div class="card">
+        <h2>Pipelines com problema nos últimos 14 dias</h2>
+        <p class="hint">Contagem diária por situação, a partir das coletas salvas.</p>
+        <div class="legend" id="legend-trend"></div>
+        <div class="chart" id="chart-trend"></div>
+      </div>
+      <div class="card">
+        <h2>Falhas de hoje</h2>
+        <p class="hint">Falhas e travamentos detalhados no dossiê.</p>
+        <div class="split">
+          <div><h3 style="margin-top:14px">Por causa (classificação automática)</h3><div class="hbars" id="bars-cat"></div></div>
+          <div><h3>Por etapa (inclui não executados)</h3><div class="hbars" id="bars-etapa"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card table-card">
+      <h2>O que está acontecendo</h2>
+      <p class="hint">Problemas de hoje agrupados por causa, com a ação padrão do catálogo de erros conhecidos.</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Causa</th><th>Situação</th><th class="n">Qtd.</th><th>Pipelines</th><th>Ação sugerida</th></tr></thead>
+          <tbody id="tbl-resumo"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= ABA 2: INVESTIGAÇÃO ================= -->
+  <section class="panel" id="investigacao" role="tabpanel" aria-labelledby="tab-investigacao" hidden>
+    <div class="inv">
+      <div class="card sel-card">
+        <h2>Falhas para investigar</h2>
+        <p class="hint">Marque uma ou mais. Cada uma é analisada separadamente pelo LLM.</p>
+        <div class="sel-tools" id="sel-tools"></div>
+        <ul class="sel-list" id="sel-list"></ul>
+        <div class="sel-foot">
+          <span class="muted" id="sel-info">Nenhuma selecionada</span>
+          <!-- API: POST /analises {table_names: [...]} -> um job por falha -->
+          <button class="btn primary" id="btn-analisar" type="button" disabled>Analisar</button>
+        </div>
+      </div>
+
+      <div class="queue" id="queue"></div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>
+/* ===================== DADOS DE EXEMPLO =====================
+   Formato espelha a saída de coletar(): pipelines.por_situacao, pipelines.com_problema
+   e dossies.dossies (com classificacao de tools/padroes.py). */
+const DADOS = {
+  regiao: "us-east-2",
+  gerado_em_utc: "2026-10-06 07:02",
+  total_pipelines: 148,
+  por_situacao: { FALHA: 7, TRAVADO: 2, NAO_EXECUTOU: 4, SEM_DADOS: 1, EXECUTANDO: 3, OK: 131 },
+  ontem: { FALHA: 4, TRAVADO: 0, NAO_EXECUTOU: 4, OK: 136 },
+  historico: {
+    dias: ["23/09","24/09","25/09","26/09","27/09","28/09","29/09","30/09","01/10","02/10","03/10","04/10","05/10","06/10"],
+    FALHA:        [3,2,4,1,2,3,5,2,3,4,2,3,4,7],
+    TRAVADO:      [0,1,0,0,1,0,1,0,0,1,0,1,0,2],
+    NAO_EXECUTOU: [4,3,3,5,4,3,4,4,3,5,4,5,4,4],
+  },
+  com_problema: [
+    { id: "tb_vendas_loja_diaria", dataset: "comercial", team: "vendas", situacao: "FALHA", etapa: "input",
+      detalhe: "status=FAILED", categoria: "ORIGEM_AUSENTE", evidencia: "Path does not exist",
+      acao: "Confirmar se a origem foi entregue no S3; reprocessar após a chegada.",
+      sm: "sdlf-meutime-input-data-sm-a", exec: "a1f3c9e2-7d1b", cluster: "j-2K8QF1ZP0X3M", step: "s-0A7Y3RB1N2KQ", hr: "04:12",
+      sfn: "States.TaskFailed: Step EMR falhou (exit code 1)",
+      log: "26/10/06 04:11:58 ERROR ApplicationMaster: User class threw exception:\norg.apache.spark.sql.AnalysisException: [PATH_NOT_FOUND] Path does not exist:\n  s3://datalake-raw/comercial/vendas_loja/dt=2026-10-06/\n...\n26/10/06 04:12:01 INFO ShutdownHookManager: Shutdown hook called" },
+    { id: "tb_devolucoes", dataset: "comercial", team: "vendas", situacao: "FALHA", etapa: "input",
+      detalhe: "status=FAILED", categoria: "ORIGEM_AUSENTE", evidencia: "Path does not exist",
+      acao: "Confirmar se a origem foi entregue no S3; reprocessar após a chegada.",
+      sm: "sdlf-meutime-input-data-sm-a", exec: "b72d0e41-3c55", cluster: "j-2K8QF1ZP0X3M", step: "s-1C4H8TL0Q9WE", hr: "04:15",
+      sfn: "States.TaskFailed: Step EMR falhou (exit code 1)",
+      log: "org.apache.spark.sql.AnalysisException: [PATH_NOT_FOUND] Path does not exist:\n  s3://datalake-raw/comercial/devolucoes/dt=2026-10-06/" },
+    { id: "tb_estoque_cd", dataset: "logistica", team: "supply", situacao: "FALHA", etapa: "input",
+      detalhe: "status=FAILED", categoria: "ORIGEM_AUSENTE", evidencia: "NoSuchKey",
+      acao: "Confirmar se a origem foi entregue no S3; reprocessar após a chegada.",
+      sm: "sdlf-meutime-input-data-sm-a", exec: "c0e98a13-11fa", cluster: "j-3M1VZ8KQ2B7D", step: "s-2PZ6G4D8R1HV", hr: "04:40",
+      sfn: "States.TaskFailed: Step EMR falhou (exit code 1)",
+      log: "com.amazonaws.services.s3.model.AmazonS3Exception: NoSuchKey\n  The specified key does not exist. Key: logistica/estoque_cd/_SUCCESS" },
+    { id: "tb_clientes_pf", dataset: "cadastro", team: "crm", situacao: "FALHA", etapa: "transformation",
+      detalhe: "status=FAILED", categoria: "SCHEMA", evidencia: "UNRESOLVED_COLUMN",
+      acao: "Mudança de schema na origem: validar com o time responsável e ajustar o mapeamento.",
+      sm: "sdlf-meutime-transformation-sm-a", exec: "d41b77c0-9e02", cluster: "j-1T5N0RW8YH4C", step: "s-3QW1L7F0X6JA", hr: "05:03",
+      sfn: "States.TaskFailed: Step EMR falhou (exit code 1)",
+      log: "org.apache.spark.sql.AnalysisException: [UNRESOLVED_COLUMN.WITH_SUGGESTION]\n  A column `dt_nascimento` cannot be resolved.\n  Did you mean one of: [`data_nascimento`, `dt_cadastro`]" },
+    { id: "tb_transacoes_cartao", dataset: "financeiro", team: "pagamentos", situacao: "FALHA", etapa: "transformation",
+      detalhe: "status=FAILED", categoria: "MEMORIA", evidencia: "Container killed by YARN for exceeding",
+      acao: "Aumentar memória de driver/executor ou revisar particionamento e skew; reprocessar.",
+      sm: "sdlf-meutime-transformation-sm-a", exec: "e5a2f018-4b6d", cluster: "j-0Z9P2XM4KD1R", step: "s-4RB8N1Y5T3GU", hr: "05:27",
+      sfn: "States.TaskFailed: Step EMR falhou (exit code 137)",
+      log: "WARN YarnAllocator: Container killed by YARN for exceeding physical memory limits.\n  14.2 GB of 14 GB physical memory used.\nERROR TaskSetManager: Task 187 in stage 12.0 failed 4 times\n  ExecutorLostFailure (executor 23 exited caused by one of the running tasks)" },
+    { id: "tb_extrato_conta", dataset: "financeiro", team: "pagamentos", situacao: "FALHA", etapa: "cryptography_sm_a",
+      detalhe: "status=FAILED", categoria: "PERMISSAO", evidencia: "KMS key is disabled",
+      acao: "Verificar role do EMR, bucket policy e chave KMS.",
+      sm: "sdlf-meutime-cryptography-sm-a", exec: "f60c3d95-a817", cluster: "j-2W7C4QN9LZ5E", step: "s-5TK3V9P2M8DX", hr: "06:01",
+      sfn: "States.TaskFailed: Step EMR falhou (exit code 1)",
+      log: "com.amazonaws.services.kms.model.KMSInvalidStateException:\n  arn:aws:kms:us-east-2:123456789012:key/8f1e... KMS key is disabled" },
+    { id: "tb_sinistros", dataset: "seguros", team: "atuarial", situacao: "FALHA", etapa: "transformation",
+      detalhe: "status=FAILED", categoria: "NAO_CLASSIFICADO", evidencia: null, acao: null,
+      sm: "sdlf-meutime-transformation-sm-a", exec: "07d8e2b6-c3a9", cluster: "j-1T5N0RW8YH4C", step: "s-6UL0W2Q7N4EY", hr: "05:44",
+      sfn: "States.TaskFailed: Step EMR falhou (exit code 1)",
+      log: "py4j.protocol.Py4JJavaError: An error occurred while calling o412.save.\nCaused by: org.apache.spark.SparkArithmeticException:\n  [DECIMAL_PRECISION_EXCEEDS_MAX_PRECISION] Decimal precision 39 exceeds max precision 38." },
+    { id: "tb_eventos_app", dataset: "digital", team: "canais", situacao: "TRAVADO", etapa: "transformation",
+      detalhe: "RUNNING desde 2026-10-06 02:10", categoria: "PERDA_DE_NO", evidencia: "ExecutorLostFailure",
+      acao: "Verificar perda de nós (Spot/decommission) no cluster; reprocessar.",
+      sm: "sdlf-meutime-transformation-sm-a", exec: "18e4a07f-d2b1", cluster: "j-3X2B6HJ1PV0N", step: "s-7VM1X3R8P5FZ", hr: "06:58",
+      sfn: "Em execução (RUNNING há 4h52)",
+      log: "WARN TaskSetManager: Lost task 41.2 in stage 7.0: ExecutorLostFailure\n  (executor 9 exited unrelated to the running tasks) Reason: Spot instance terminated\nINFO DAGScheduler: Resubmitting ShuffleMapStage 7" },
+    { id: "tb_cotacoes_moeda", dataset: "financeiro", team: "tesouraria", situacao: "TRAVADO", etapa: "cryptography_sm_b",
+      detalhe: "RUNNING desde 2026-10-06 03:40", categoria: "NAO_CLASSIFICADO", evidencia: null, acao: null,
+      sm: "sdlf-meutime-cryptography-sm-b", exec: "29f5b1c8-e4c2", cluster: "j-0Q4R8TN2WX6A", step: "s-8WN2Y4S9Q6GA", hr: "06:59",
+      sfn: "Em execução (RUNNING há 3h22)", aviso: "stderr do step ainda não sincronizado no S3",
+      log: null },
+    { id: "tb_fechamento_mensal", dataset: "contabil", team: "controladoria", situacao: "NAO_EXECUTOU", etapa: "input",
+      detalhe: "última atividade em 2026-09-30", categoria: "VERIFICAR_AGENDA", acao: "Confirmar se o pipeline é mensal antes de abrir incidente." },
+    { id: "tb_metas_semanais", dataset: "comercial", team: "vendas", situacao: "NAO_EXECUTOU", etapa: "input",
+      detalhe: "última atividade em 2026-10-03", categoria: "VERIFICAR_AGENDA", acao: "Confirmar se o pipeline é semanal antes de abrir incidente." },
+    { id: "tb_campanhas", dataset: "marketing", team: "crm", situacao: "NAO_EXECUTOU", etapa: "input",
+      detalhe: "última atividade em 2026-10-04", categoria: "VERIFICAR_AGENDA", acao: "Confirmar a agenda com o time de marketing." },
+    { id: "tb_rotas_entrega", dataset: "logistica", team: "supply", situacao: "NAO_EXECUTOU", etapa: "transformation",
+      detalhe: "transformation não rodou após o input de 2026-10-06 04:10", categoria: "DEPENDENCIA",
+      acao: "Input rodou e a transformation não iniciou: verificar o gatilho da Step Function." },
+    { id: "tb_legado_score", dataset: "risco", team: "credito", situacao: "SEM_DADOS", etapa: null,
+      detalhe: "nenhuma etapa conhecida com data de início", categoria: "SEM_DADOS", acao: "Revisar se o pipeline ainda existe ou se usa colunas de etapa fora do ETAPAS." },
+  ],
+};
+
+/* Diagnóstico simulado do LLM por falha.
+   API: POST /analises -> GET /analises/{id} (ou SSE) devolvendo este formato. */
+const DIAGNOSTICOS = {
+  tb_vendas_loja_diaria: {
+    causa: "Arquivo do dia não foi entregue pela origem comercial (SFTP de lojas).", confianca: 3,
+    grupo: "Mesmo incidente de tb_devolucoes: as duas leem o mesmo envio do SFTP de lojas, e nenhum chegou em dt=2026-10-06.",
+    evidencias: ["Path does not exist em s3://datalake-raw/comercial/vendas_loja/dt=2026-10-06/", "Mesmo cluster j-2K8QF1ZP0X3M que tb_devolucoes, falhas com 3 min de diferença", "Execução de ontem do mesmo pipeline terminou FINISHED"],
+    impacto: "Painéis de venda diária sem o dia 05/10.",
+    plano: [["P1", "Acionar o time de vendas para confirmar o envio do SFTP", "Correção imediata"], ["P1", "Reprocessar input após a chegada do arquivo", "Correção imediata"], ["P3", "Alarme de chegada do _SUCCESS antes do horário do pipeline", "Preventiva"]],
+    lacunas: ["Não foi verificado o log do job de ingestão do SFTP (fora da coleta)."] },
+  tb_devolucoes: {
+    causa: "Mesma origem ausente de tb_vendas_loja_diaria.", confianca: 3,
+    grupo: "Agrupado com tb_vendas_loja_diaria.",
+    evidencias: ["Path does not exist em s3://datalake-raw/comercial/devolucoes/dt=2026-10-06/", "Mesmo cluster e mesma janela de horário"],
+    impacto: "Devoluções do dia ausentes; afeta o cálculo de venda líquida.",
+    plano: [["P1", "Reprocessar junto com tb_vendas_loja_diaria após a entrega", "Correção imediata"]],
+    lacunas: [] },
+  tb_estoque_cd: {
+    causa: "Marcador _SUCCESS do estoque não foi gravado; a carga da origem pode estar incompleta.", confianca: 2,
+    evidencias: ["NoSuchKey para logistica/estoque_cd/_SUCCESS", "Cluster diferente do incidente comercial: não parece a mesma causa"],
+    impacto: "Posição de estoque do CD desatualizada em 1 dia.",
+    plano: [["P1", "Verificar com supply se a extração do WMS terminou", "Investigação"], ["P2", "Reprocessar após confirmar a carga completa", "Correção imediata"]],
+    lacunas: ["Não há como saber pela coleta se os arquivos de dados chegaram sem o _SUCCESS."] },
+  tb_clientes_pf: {
+    causa: "Coluna dt_nascimento foi renomeada para data_nascimento na origem.", confianca: 3,
+    evidencias: ["UNRESOLVED_COLUMN `dt_nascimento`, com sugestão `data_nascimento`", "Falha na transformation; o input do dia terminou OK"],
+    impacto: "Cadastro PF sem atualização; consumidores de CRM leem dado de ontem.",
+    plano: [["P1", "Confirmar com o CRM se a renomeação é definitiva", "Investigação"], ["P2", "Ajustar o mapeamento da transformation e reprocessar", "Correção imediata"], ["P3", "Validação de schema no input para falhar antes", "Preventiva"]],
+    lacunas: [] },
+  tb_transacoes_cartao: {
+    causa: "Executor estourou a memória em um estágio com skew (task 187 falhou 4 vezes).", confianca: 2,
+    evidencias: ["Container killed by YARN: 14.2 GB de 14 GB", "Exit code 137 na Step Function", "Falha concentrada em uma task: indício de skew, não de volume geral"],
+    impacto: "Transações de cartão do dia não disponíveis para conciliação.",
+    plano: [["P1", "Reprocessar com spark.executor.memoryOverhead maior", "Correção imediata"], ["P2", "Investigar a chave de join com skew no stage 12", "Investigação"]],
+    lacunas: ["A coleta não traz o volume de entrada do dia para comparar com a média."] },
+  tb_extrato_conta: {
+    causa: "Chave KMS usada na criptografia está desabilitada.", confianca: 3,
+    evidencias: ["KMSInvalidStateException: KMS key is disabled", "Falha na etapa cryptography_sm_a; input e transformation OK"],
+    impacto: "Extrato não publicado na camada criptografada.",
+    plano: [["P1", "Verificar com segurança se a desativação da chave foi intencional (rotação?)", "Investigação"], ["P1", "Reabilitar a chave ou apontar para a nova e reprocessar", "Correção imediata"]],
+    lacunas: ["Quem desativou a chave só aparece no CloudTrail, fora da coleta."] },
+  tb_sinistros: {
+    causa: "Cálculo gera decimal com precisão 39, acima do máximo 38 do Spark.", confianca: 2,
+    evidencias: ["SparkArithmeticException: Decimal precision 39 exceeds max precision 38", "Falha ao salvar (o412.save), depois do cálculo"],
+    impacto: "Base de sinistros sem o dia; relatórios atuariais desatualizados.",
+    plano: [["P2", "Ajustar o cast do campo calculado para DECIMAL(38, x)", "Correção imediata"], ["P3", "Incluir este padrão no catálogo (padroes.py)", "Preventiva"]],
+    lacunas: ["O log não mostra qual coluna estourou; conferir no código da transformation."] },
+  tb_eventos_app: {
+    causa: "Perda de nós Spot fez o Spark refazer estágios em loop.", confianca: 2,
+    evidencias: ["ExecutorLostFailure: Spot instance terminated", "Resubmitting ShuffleMapStage 7 repetido", "RUNNING há 4h52, acima do limite de 3h"],
+    impacto: "Eventos do app atrasados; o pipeline pode não terminar sozinho.",
+    plano: [["P1", "Encerrar a execução e reprocessar com nós on-demand", "Correção imediata"], ["P3", "Avaliar mix Spot/on-demand no task group", "Preventiva"]],
+    lacunas: ["A coleta não traz o histórico de instâncias do cluster."] },
+  tb_cotacoes_moeda: {
+    causa: "Sem evidência suficiente: o log do step ainda não está no S3.", confianca: 1,
+    evidencias: ["RUNNING há 3h22 na cryptography_sm_b", "stderr do step ainda não sincronizado"],
+    impacto: "Cotações do dia podem atrasar o fechamento da tesouraria.",
+    plano: [["P2", "Abrir o step no console do EMR e checar se há progresso", "Investigação"], ["P2", "Rodar a análise de novo em ~10 min, quando o log sincronizar", "Investigação"]],
+    lacunas: ["Sem log, não é possível propor causa."] },
+};
+
+const ETAPAS = ["input", "transformation", "cryptography_sm_a", "cryptography_sm_b"];
+const ROTULO = { FALHA: "Falha", TRAVADO: "Travado", NAO_EXECUTOU: "Não executou", SEM_DADOS: "Sem dados", EXECUTANDO: "Em execução", OK: "OK" };
+const COR = { FALHA: "var(--st-falha)", TRAVADO: "var(--st-travado)", NAO_EXECUTOU: "var(--st-naoexec)", SEM_DADOS: "var(--st-semdados)", EXECUTANDO: "var(--st-exec)", OK: "var(--st-ok)" };
+const CATEGORIAS_FINAIS = ["ORIGEM_AUSENTE", "SCHEMA", "MEMORIA", "PERDA_DE_NO", "PERMISSAO", "THROTTLING", "CONEXAO", "CODIGO", "OUTRO"];
+const ACOES = ["Reprocessar", "Reprocessar após ajuste", "Acionar time de origem", "Abrir chamado (infra/segurança)", "Aguardar e reavaliar", "Nenhuma ação"];
+
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const pill = s => `<span class="pill" data-s="${s}">${ROTULO[s]}</span>`;
+
+/* ---------- cabeçalho e abas ---------- */
+$("#meta").textContent = `${DADOS.regiao} · coleta de ${DADOS.gerado_em_utc} UTC · ${DADOS.total_pipelines} pipelines`;
+const investigaveis = DADOS.com_problema.filter(p => p.situacao === "FALHA" || p.situacao === "TRAVADO");
+$("#count-inv").textContent = investigaveis.length;
+
+function abrirAba(nome) {
+  for (const t of document.querySelectorAll(".tab")) {
+    const ativo = t.id === "tab-" + nome;
+    t.setAttribute("aria-selected", ativo);
+    $("#" + t.getAttribute("aria-controls")).hidden = !ativo;
+  }
+  try { history.replaceState(null, "", "#" + nome); } catch (e) {}
+}
+for (const t of document.querySelectorAll(".tab")) t.addEventListener("click", () => abrirAba(t.id.slice(4)));
+if (location.hash === "#investigacao") abrirAba("investigacao");
+
+/* ---------- big numbers ---------- */
+function kpis() {
+  const s = DADOS.por_situacao, o = DADOS.ontem;
+  const saude = (s.OK / DADOS.total_pipelines * 100).toFixed(1).replace(".", ",");
+  const delta = (hoje, ontem) => {
+    const d = hoje - ontem;
+    if (d === 0) return `igual a ontem`;
+    return `<b class="${d > 0 ? "delta-up-bad" : "delta-down-good"}">${d > 0 ? "+" : "−"}${Math.abs(d)}</b> vs. ontem`;
+  };
+  const itens = [
+    { lbl: "Saudáveis", c: COR.OK, val: s.OK, sub: `${saude}% dos ${DADOS.total_pipelines}` },
+    { lbl: "Falhas", c: COR.FALHA, val: s.FALHA, sub: delta(s.FALHA, o.FALHA), alert: true },
+    { lbl: "Travados", c: COR.TRAVADO, val: s.TRAVADO, sub: `acima de 3h em execução` },
+    { lbl: "Não executaram", c: COR.NAO_EXECUTOU, val: s.NAO_EXECUTOU, sub: `podem ser não diários` },
+    { lbl: "Em execução", c: COR.EXECUTANDO, val: s.EXECUTANDO, sub: `dentro do tempo esperado` },
+    { lbl: "Sem dados", c: COR.SEM_DADOS, val: s.SEM_DADOS, sub: `sem etapa com data` },
+  ];
+  $("#kpis").innerHTML = itens.map(k => `
+    <div class="kpi${k.alert && k.val ? " alert" : ""}">
+      <span class="lbl"><i style="--c:${k.c}"></i>${k.lbl}</span>
+      <span class="val">${k.val}</span>
+      <span class="sub">${k.sub}</span>
+    </div>`).join("");
+}
+
+/* ---------- tendência (barras empilhadas) ---------- */
+function tendencia() {
+  const H = DADOS.historico, series = ["FALHA", "TRAVADO", "NAO_EXECUTOU"];
+  $("#legend-trend").innerHTML = series.map(s => `<span><i style="background:${COR[s]}"></i>${ROTULO[s]}</span>`).join("");
+  const W = 640, Ht = 220, m = { t: 10, r: 8, b: 26, l: 28 };
+  const iw = W - m.l - m.r, ih = Ht - m.t - m.b;
+  const totais = H.dias.map((_, i) => series.reduce((a, s) => a + H[s][i], 0));
+  const max = Math.ceil(Math.max(...totais) / 4) * 4;
+  const y = v => m.t + ih - v / max * ih;
+  const bw = iw / H.dias.length, gap = Math.max(6, bw * 0.32);
+  let svg = `<svg viewBox="0 0 ${W} ${Ht}" role="img" aria-label="Pipelines com problema por dia">`;
+  for (let v = 0; v <= max; v += max / 4) {
+    svg += `<line class="${v === 0 ? "base" : "gridline"}" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/>`;
+    svg += `<text x="${m.l - 8}" y="${y(v) + 4}" text-anchor="end">${v}</text>`;
+  }
+  H.dias.forEach((d, i) => {
+    const x = m.l + i * bw;
+    svg += `<rect class="col-hit" data-i="${i}" x="${x}" y="${m.t}" width="${bw}" height="${ih}"/>`;
+    let acc = 0;
+    series.forEach((s, k) => {
+      const v = H[s][i];
+      if (!v) return;
+      const y0 = y(acc), y1 = y(acc + v);
+      const top = series.slice(k + 1).every(t => !H[t][i]);
+      const h = y0 - y1 - (acc ? 2 : 0);
+      if (top) {
+        const r = Math.min(4, h, (bw - gap) / 2);
+        const xl = x + gap / 2, xr = x + bw - gap / 2, yb = y0 - (acc ? 2 : 0);
+        svg += `<path d="M${xl},${yb} V${y1 + r} Q${xl},${y1} ${xl + r},${y1} H${xr - r} Q${xr},${y1} ${xr},${y1 + r} V${yb} Z" fill="${COR[s]}" pointer-events="none"/>`;
+      } else {
+        svg += `<rect x="${x + gap / 2}" y="${y1}" width="${bw - gap}" height="${h}" fill="${COR[s]}" pointer-events="none"/>`;
+      }
+      acc += v;
+    });
+    if (i % 2 === 1 || i === H.dias.length - 1) svg += `<text x="${x + bw / 2}" y="${Ht - 8}" text-anchor="middle">${d}</text>`;
+  });
+  const ult = H.dias.length - 1;
+  svg += `<text x="${m.l + ult * bw + bw / 2}" y="${y(totais[ult]) - 6}" text-anchor="middle" style="fill:var(--fg);font-weight:600">${totais[ult]}</text>`;
+  svg += `</svg><div class="tip" hidden></div>`;
+  const el = $("#chart-trend");
+  el.innerHTML = svg;
+  const tip = $(".tip", el);
+  el.querySelectorAll(".col-hit").forEach(r => {
+    r.addEventListener("mouseenter", () => {
+      const i = +r.dataset.i, box = el.getBoundingClientRect(), rb = r.getBoundingClientRect();
+      tip.innerHTML = `<b>${H.dias[i]}</b>` + series.map(s => `<div class="row"><span><i style="background:${COR[s]}"></i>${ROTULO[s]}</span><span class="num">${H[s][i]}</span></div>`).join("")
+        + `<div class="row" style="margin-top:4px"><span>Total</span><b class="num">${totais[i]}</b></div>`;
+      tip.hidden = false;
+      const cx = rb.left - box.left + rb.width / 2;
+      tip.style.left = Math.min(Math.max(cx, 80), box.width - 80) + "px";
+      tip.style.top = (rb.top - box.top + 4) + "px";
+    });
+    r.addEventListener("mouseleave", () => { tip.hidden = true; });
+  });
+}
+
+/* ---------- barras horizontais ---------- */
+function barras(alvo, pares) {
+  const max = Math.max(...pares.map(p => p[1]), 1);
+  $(alvo).innerHTML = pares.map(([n, v]) => `
+    <div class="hbar" title="${esc(n)}: ${v}">
+      <span class="name ${/^[A-Z_]+$/.test(n) ? "cat" : ""}">${esc(n)}</span>
+      <span class="track"><span class="fill" style="width:${v / max * 100}%"></span></span>
+      <span class="v">${v}</span>
+    </div>`).join("");
+}
+function contar(lista, chave) {
+  const m = new Map();
+  for (const p of lista) if (p[chave]) m.set(p[chave], (m.get(p[chave]) || 0) + 1);
+  return [...m.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+/* ---------- tabela-resumo ---------- */
+function resumo() {
+  const grupos = new Map();
+  for (const p of DADOS.com_problema) {
+    const g = grupos.get(p.categoria) || { categoria: p.categoria, situacoes: new Set(), itens: [], acao: p.acao };
+    g.situacoes.add(p.situacao); g.itens.push(p); g.acao = g.acao || p.acao;
+    grupos.set(p.categoria, g);
+  }
+  const ordem = { FALHA: 0, TRAVADO: 1, NAO_EXECUTOU: 2, SEM_DADOS: 3 };
+  const linhas = [...grupos.values()].sort((a, b) =>
+    Math.min(...[...a.situacoes].map(s => ordem[s])) - Math.min(...[...b.situacoes].map(s => ordem[s])) || b.itens.length - a.itens.length);
+  $("#tbl-resumo").innerHTML = linhas.map(g => `
+    <tr>
+      <td><span class="cat">${g.categoria}</span></td>
+      <td><div class="pipes">${[...g.situacoes].map(pill).join("")}</div></td>
+      <td class="n">${g.itens.length}</td>
+      <td><div class="pipes">${g.itens.map(p => `<code>${p.id}</code>`).join("")}</div></td>
+      <td>${g.acao ? esc(g.acao) : `<span style="color:var(--muted)">Sem padrão conhecido.</span> `}
+        ${g.itens.some(p => p.situacao === "FALHA" || p.situacao === "TRAVADO")
+          ? `<button class="link" type="button" data-investigar="${g.itens.filter(p => p.situacao === "FALHA" || p.situacao === "TRAVADO").map(p => p.id).join(",")}">Investigar</button>` : ""}
+      </td>
+    </tr>`).join("");
+  document.querySelectorAll("[data-investigar]").forEach(b => b.addEventListener("click", () => {
+    selecionados.clear();
+    b.dataset.investigar.split(",").forEach(id => { if (!analises.has(id)) selecionados.add(id); });
+    renderLista(); abrirAba("investigacao"); window.scrollTo(0, 0);
+  }));
+}
+
+/* ===================== ABA 2: INVESTIGAÇÃO ===================== */
+const selecionados = new Set();
+const analises = new Map();   // id -> { fase, avaliacao }
+const FASES = ["Na fila", "Analisando com LLM", "Pronto para avaliação"];
+
+function renderFiltros() {
+  const cats = contar(investigaveis, "categoria");
+  $("#sel-tools").innerHTML =
+    `<button class="chip" type="button" data-f="todas">Todas (${investigaveis.length})</button>` +
+    `<button class="chip" type="button" data-f="FALHA">Só falhas</button>` +
+    `<button class="chip" type="button" data-f="TRAVADO">Só travados</button>` +
+    cats.map(([c, n]) => `<button class="chip cat" type="button" data-f="cat:${c}">${c} (${n})</button>`).join("") +
+    `<button class="chip" type="button" data-f="limpar">Limpar</button>`;
+  $("#sel-tools").querySelectorAll(".chip").forEach(ch => ch.addEventListener("click", () => {
+    const f = ch.dataset.f;
+    if (f === "limpar") selecionados.clear();
+    else investigaveis.filter(p => f === "todas" || p.situacao === f || f === "cat:" + p.categoria)
+      .forEach(p => { if (!analises.has(p.id)) selecionados.add(p.id); });
+    renderLista();
+  }));
+}
+
+function renderLista() {
+  $("#sel-list").innerHTML = investigaveis.map(p => {
+    const a = analises.get(p.id);
+    const estado = a ? (a.avaliacao ? "avaliada" : FASES[a.fase].toLowerCase()) : "";
+    return `<li><label>
+      <input type="checkbox" value="${p.id}" ${selecionados.has(p.id) ? "checked" : ""} ${a ? "disabled" : ""}>
+      <span>
+        <span class="t"><strong>${p.id}</strong>${pill(p.situacao)}</span>
+        <span class="d"><span class="cat">${p.categoria}</span> · ${p.etapa} · ${p.team}</span>
+        ${a ? `<span class="state">${estado}</span>` : ""}
+      </span>
+    </label></li>`;
+  }).join("");
+  $("#sel-list").querySelectorAll("input").forEach(cb => cb.addEventListener("change", () => {
+    cb.checked ? selecionados.add(cb.value) : selecionados.delete(cb.value);
+    atualizarRodape();
+  }));
+  atualizarRodape();
+}
+
+function atualizarRodape() {
+  const n = selecionados.size;
+  $("#sel-info").textContent = n ? `${n} selecionada${n > 1 ? "s" : ""}` : "Nenhuma selecionada";
+  $("#btn-analisar").disabled = !n;
+  $("#btn-analisar").textContent = n ? `Analisar ${n}` : "Analisar";
+}
+
+$("#btn-analisar").addEventListener("click", () => {
+  const ids = [...selecionados];
+  selecionados.clear();
+  ids.forEach(id => analises.set(id, { fase: 0, avaliacao: null }));
+  renderLista(); renderFila();
+  // Simula a fila no servidor: no máximo 2 análises em paralelo.
+  const pend = [...ids];
+  const proximo = () => {
+    const id = pend.shift();
+    if (!id) return;
+    analises.get(id).fase = 1; renderCard(id); renderLista();
+    setTimeout(() => { analises.get(id).fase = 2; renderCard(id); renderLista(); proximo(); }, 1600 + Math.random() * 1600);
+  };
+  proximo(); proximo();
+  toast(`${ids.length} análise${ids.length > 1 ? "s" : ""} na fila`);
+});
+
+function renderFila() {
+  const q = $("#queue");
+  if (!analises.size) {
+    q.innerHTML = `<div class="empty">
+      <h2>Nenhuma análise em andamento</h2>
+      <p style="margin:0">O dossiê de cada falha já vem da coleta sem LLM. A análise acrescenta o diagnóstico.</p>
+      <ol>
+        <li>Marque as falhas na lista ao lado.</li>
+        <li>Clique em <b>Analisar</b>. Cada falha vira uma análise separada.</li>
+        <li>Revise o diagnóstico e registre sua avaliação.</li>
+      </ol></div>`;
+    return;
+  }
+  const ids = [...analises.keys()].reverse();
+  q.innerHTML = ids.map(id => `<article class="an" id="an-${id}"></article>`).join("");
+  ids.forEach(renderCard);
+}
+
+function renderCard(id) {
+  const el = $("#an-" + CSS.escape(id));
+  if (!el) return;
+  const p = DADOS.com_problema.find(x => x.id === id), a = analises.get(id), d = DIAGNOSTICOS[id];
+  const steps = FASES.map((f, i) => `<span class="step ${i < a.fase || (i === 2 && a.fase === 2) ? "done" : i === a.fase ? "now" : ""}"><i>${i < a.fase || (i === 2 && a.fase === 2) ? "✓" : ""}</i>${f}</span>`).join("");
+
+  const dossie = `
+    <div class="an-col">
+      <h4>Dossiê da coleta</h4>
+      <dl class="kv">
+        <dt>Etapa</dt><dd>${p.etapa}</dd>
+        <dt>Classificação</dt><dd><span class="cat">${p.categoria}</span>${p.evidencia ? ` · “${esc(p.evidencia)}”` : ""}</dd>
+        <dt>Step Function</dt><dd class="mono">${p.sm}<br>${p.exec}</dd>
+        <dt>Erro</dt><dd>${esc(p.sfn)}</dd>
+        <dt>EMR</dt><dd class="mono">${p.cluster} / ${p.step}</dd>
+        ${p.aviso ? `<dt>Aviso</dt><dd>${esc(p.aviso)}</dd>` : ""}
+      </dl>
+      ${p.log ? `<pre class="log">${esc(p.log)}</pre>` : ""}
+    </div>`;
+
+  let diag;
+  if (a.fase < 2) {
+    diag = `<div class="an-col"><h4>Diagnóstico do LLM</h4>
+      <p class="waiting">${a.fase === 0 ? "Aguardando vaga na fila." : "Lendo o dossiê e o trecho de log."}</p>
+      <div class="skeleton"><span></span><span></span><span></span><span></span></div></div>`;
+  } else {
+    const barrasConf = [1, 2, 3].map(n => `<span class="${n <= d.confianca ? "on" : ""}"></span>`).join("");
+    diag = `<div class="an-col diag"><h4>Diagnóstico do LLM</h4>
+      ${d.grupo ? `<div class="group">${esc(d.grupo)}</div>` : ""}
+      <p class="cause">${esc(d.causa)}</p>
+      <p class="conf">Confiança <b>${barrasConf}</b> ${["", "baixa", "média", "alta"][d.confianca]}</p>
+      <p style="margin:8px 0 0;color:var(--muted);font-size:12px">Evidências</p>
+      <ul>${d.evidencias.map(e => `<li>${esc(e)}</li>`).join("")}</ul>
+      <p><span style="color:var(--muted);font-size:12px">Impacto provável</span><br>${esc(d.impacto)}</p>
+      <div class="tbl-wrap" style="margin-top:0"><table class="plan">
+        <thead><tr><th>Prior.</th><th>Ação proposta</th><th>Tipo</th></tr></thead>
+        <tbody>${d.plano.map(([pr, ac, t]) => `<tr><td><span class="prio">${pr}</span></td><td>${esc(ac)}</td><td>${t}</td></tr>`).join("")}</tbody>
+      </table></div>
+      ${d.lacunas.length ? `<p style="margin:10px 0 0;color:var(--muted);font-size:12px">Lacunas</p><ul>${d.lacunas.map(l => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  }
+
+  const av = a.avaliacao;
+  const pronto = a.fase === 2;
+  const sugerida = CATEGORIAS_FINAIS.includes(p.categoria) ? p.categoria : "CODIGO";
+  const evalHtml = `
+    <form class="eval" data-id="${id}" aria-disabled="${!pronto}">
+      <h4>Avaliação do analista</h4>
+      <div class="eval-row">
+        <div class="field"><span>O diagnóstico está</span>
+          <div class="seg" role="radiogroup">
+            ${[["correto", "Correto"], ["parcial", "Parcial"], ["incorreto", "Incorreto"]].map(([v, l]) =>
+              `<label><input type="radio" name="v-${id}" value="${v}" ${av?.veredito === v ? "checked" : ""} ${pronto ? "" : "disabled"}><span>${l}</span></label>`).join("")}
+          </div>
+        </div>
+        <label class="field"><span>Causa final</span>
+          <select id="cat-${id}" ${pronto ? "" : "disabled"}>${CATEGORIAS_FINAIS.map(c => `<option ${(av?.categoria || sugerida) === c ? "selected" : ""}>${c}</option>`).join("")}</select>
+        </label>
+        <label class="field"><span>Ação decidida</span>
+          <select id="acao-${id}" ${pronto ? "" : "disabled"}>${ACOES.map(c => `<option ${av?.acao === c ? "selected" : ""}>${c}</option>`).join("")}</select>
+        </label>
+      </div>
+      <label class="field"><span>Comentário (opcional)</span>
+        <textarea id="obs-${id}" placeholder="O que o diagnóstico errou ou deixou de ver" ${pronto ? "" : "disabled"}>${esc(av?.obs || "")}</textarea>
+      </label>
+      <div class="eval-foot">
+        <!-- API: PUT /analises/{id}/avaliacao -->
+        <button class="btn primary sm" type="submit" ${pronto ? "" : "disabled"}>${av ? "Atualizar avaliação" : "Salvar avaliação"}</button>
+        <button class="btn sm" type="button" data-refazer ${pronto ? "" : "disabled"}>Refazer análise</button>
+        ${av ? `<span class="saved">Avaliação salva às ${av.hora}</span>` : ""}
+      </div>
+    </form>`;
+
+  el.innerHTML = `
+    <div class="an-head">
+      <h3>${id}</h3>${pill(p.situacao)}
+      <span class="ctx">${p.dataset} · ${p.team} · ${p.etapa} · ${p.hr} UTC</span>
+      <div class="right"><button class="btn sm" type="button" data-fechar ${a.fase === 1 ? "disabled" : ""}>Remover</button></div>
+    </div>
+    <div class="steps">${steps}</div>
+    <div class="an-body">${dossie}${diag}</div>
+    ${evalHtml}`;
+
+  const form = $("form", el);
+  form.addEventListener("submit", ev => {
+    ev.preventDefault();
+    const v = $(`input[name="v-${CSS.escape(id)}"]:checked`, form);
+    if (!v) { toast("Escolha se o diagnóstico está correto, parcial ou incorreto."); return; }
+    const agora = new Date();
+    a.avaliacao = { veredito: v.value, categoria: $("#cat-" + CSS.escape(id)).value, acao: $("#acao-" + CSS.escape(id)).value,
+      obs: $("#obs-" + CSS.escape(id)).value, hora: agora.toTimeString().slice(0, 5) };
+    renderCard(id); renderLista(); toast(`Avaliação de ${id} salva`);
+  });
+  $("[data-refazer]", el).addEventListener("click", () => {
+    a.fase = 1; a.avaliacao = null; renderCard(id); renderLista();
+    setTimeout(() => { a.fase = 2; renderCard(id); renderLista(); }, 1800);
+  });
+  $("[data-fechar]", el).addEventListener("click", () => {
+    analises.delete(id); renderLista(); renderFila();
+  });
+}
+
+let toastT;
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 2400);
+}
+$("#btn-coleta").addEventListener("click", () => toast("No sistema real, isto roda a coleta sem LLM e recarrega o painel."));
+
+/* ---------- inicialização ---------- */
+kpis();
+tendencia();
+barras("#bars-cat", contar(investigaveis, "categoria"));
+barras("#bars-etapa", ETAPAS.map(e => [e, DADOS.com_problema.filter(p => p.etapa === e).length]).filter(p => p[1]));
+resumo();
+renderFiltros();
+renderLista();
+// Estado inicial de exemplo: duas análises já concluídas, uma delas avaliada.
+analises.set("tb_clientes_pf", { fase: 2, avaliacao: { veredito: "correto", categoria: "SCHEMA", acao: "Acionar time de origem", obs: "", hora: "07:21" } });
+analises.set("tb_vendas_loja_diaria", { fase: 2, avaliacao: null });
+renderLista();
+renderFila();
+</script>
+</body>
+</html>
