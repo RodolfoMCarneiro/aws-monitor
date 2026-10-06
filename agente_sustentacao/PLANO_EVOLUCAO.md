@@ -10,7 +10,8 @@ Referências visuais: `web/painel.html` (esboço v1) e `web/painel_v2.html` (esb
 2. **Uma chamada ao LLM por grupo, não por pipeline.** O grupo é formado por dataset + etapa + assinatura do erro. O LLM recebe um dossiê completo e um resumo curto dos demais membros.
 3. **Leitura e escrita separadas.** A coleta continua só de leitura. A reexecução entra com uma role própria, desligada por padrão, e nunca é disparada pelo LLM.
 4. **Dados ficam locais e fora do Git.** Banco SQLite e JSONs de coleta ficam em `saida/`, que não é versionada. O que vai para o Git é código e conhecimento revisado (por exemplo, padrões novos em `tools/padroes.py`).
-5. **Uma camada de acesso aos dados.** Todo acesso ao banco passa por um único módulo, para que a troca futura por um banco compartilhado fique restrita a ele.
+5. **Só a última execução de cada tabela.** O painel mostra a situação atual: `job-pipelines-last-executions` diz o estado de cada pipeline e `job-metrics` detalha a execução. Tendência e histórico ficam no dashboard do Datadog, que recebe o mesmo conteúdo da Step Function de processamento. O painel não reconstrói séries históricas.
+6. **Uma camada de acesso aos dados.** Todo acesso ao banco passa por um único módulo, para que a troca futura por um banco compartilhado fique restrita a ele.
 
 ## Visão das fases
 
@@ -82,7 +83,7 @@ Pré-requisito: o PR #1 (troca de `litellm` pelo SDK `openai`) mergeado. A fase 
 
 | Tabela | Campos principais | Observação |
 |---|---|---|
-| `coletas` | id, gerado_em_utc, regiao, caminho_json, contagens por situação | Alimenta o histórico de 14 dias sem reler JSON |
+| `coletas` | id, gerado_em_utc, regiao, caminho_json | Liga análises e avaliações à coleta em que foram feitas; não alimenta gráfico histórico |
 | `grupos` | id, coleta_id, dataset, etapa, categoria, assinatura, hash_assinatura | Gerado na coleta |
 | `grupo_membros` | grupo_id, table_name, execution_arn, situacao | Permite separar um pipeline do grupo |
 | `analises` | id, grupo_id, origem (`llm` / `reaproveitada`), analise_origem_id, modelo, tokens_entrada, tokens_saida, diagnostico_json, caminho_trace, criado_em | Tokens reais, não estimados |
@@ -98,9 +99,6 @@ Blobs grandes (coleta e trace) continuam como arquivo em `saida/`; o banco guard
 - Comando `python main.py --backup` usando `VACUUM INTO 'saida/backup_<data>.db'` (seguro com o app rodando). Guardar fora do repositório.
 - Nunca copiar o `.db` com cópia de arquivo enquanto o app estiver aberto, e nunca versioná-lo (ver fase 0).
 
-### 2.5 Importação
-- Script único para importar os `coleta_*.json` existentes na tabela `coletas`, para o gráfico de histórico já nascer com dados.
-
 **Pronto quando:** uma execução `--sem-llm` registra coleta e grupos no banco, e o teste offline roda contra um banco temporário.
 
 ---
@@ -113,12 +111,14 @@ Blobs grandes (coleta e trace) continuam como arquivo em `saida/`; o banco guard
 - Endpoints:
   - `GET /` serve `web/painel.html` (versão final derivada do v2).
   - `GET /coletas/ultima`: big numbers, gráficos por dataset e causa, grupos.
-  - `GET /coletas/historico?dias=14`: série para o gráfico de tendência.
+  - `GET /?pipeline=<table_name>`: abre a aba de investigação no grupo do pipeline. É o destino do link de contexto no dashboard do Datadog.
   - `POST /coletas`: roda o fluxo `--sem-llm` em background e devolve o id. Bloquear coletas simultâneas.
 - O HTML troca os dados fixos (`DADOS`) por `fetch` nesses endpoints.
+- Visão geral só com a última execução: big numbers por situação, barra de situação de todas as tabelas, problemas por etapa, falhas por dataset e por causa, e a tabela de grupos. Link "Histórico no Datadog" para tendências.
+- No Datadog: configurar o link de contexto do dashboard apontando para `/?pipeline={{table_name}}`.
 - Dependências novas: `fastapi`, `uvicorn`. Nenhuma permissão AWS nova.
 
-**Pronto quando:** `uvicorn api:app` abre o painel com a coleta real mais recente e o botão "Atualizar coleta" funciona.
+**Pronto quando:** `uvicorn api:app` abre o painel com a coleta real mais recente, o botão "Atualizar coleta" funciona e o link a partir do Datadog abre o grupo certo.
 
 ---
 
@@ -178,7 +178,7 @@ Blobs grandes (coleta e trace) continuam como arquivo em `saida/`; o banco guard
 **Objetivo:** o sistema fica mais barato e mais preciso com o uso.
 
 - Relatório periódico (consulta no banco) de assinaturas avaliadas como `correto` 3 ou mais vezes: candidatas a padrão novo em `tools/padroes.py`, via PR com revisão.
-- Métricas no painel: taxa de acerto do LLM por categoria (vereditos), tokens por dia, percentual de grupos reaproveitados, reexecuções por resultado (sucesso / falhou de novo).
+- Métricas sobre a própria ferramenta (não sobre os pipelines, cujo histórico fica no Datadog): taxa de acerto do LLM por categoria (vereditos), tokens consumidos, percentual de grupos reaproveitados, reexecuções por resultado (sucesso / falhou de novo). Podem ser uma consulta ou relatório, sem gráfico no painel.
 - Reexecução que falhou de novo com a mesma assinatura sinaliza "causa não resolvida" no grupo.
 
 **Pronto quando:** pelo menos um padrão novo entrou em `padroes.py` a partir dos dados de avaliação.

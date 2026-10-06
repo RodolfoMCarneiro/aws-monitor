@@ -10,9 +10,12 @@
        O LLM recebe um dossiê completo por grupo e um resumo curto dos demais pipelines.
     2. Diagnóstico já validado para a mesma assinatura é reaproveitado sem chamar o LLM.
     3. Reexecução da Step Function com o mesmo input da execução que falhou.
+    4. Só a última execução de cada tabela (job-pipelines-last-executions, detalhada pela job-metrics).
+       Tendência histórica fica no dashboard do Datadog, que recebe o mesmo conteúdo.
 
   Dados fixos neste arquivo. Na versão com FastAPI:
     GET  /coletas/ultima                    -> visão geral (fluxo --sem-llm)
+    GET  /?pipeline=<table_name>            -> abre a investigação no grupo do pipeline (link de contexto do Datadog)
     GET  /grupos                            -> grupos de falha (agrupamento determinístico)
     POST /analises {grupo, table_names}     -> 1 chamada ao LLM por grupo
     PUT  /analises/{id}/avaliacao           -> parecer do analista (alimenta o reaproveitamento)
@@ -150,6 +153,21 @@ main { padding-block: 20px 48px; }
 .tip .row { display: flex; justify-content: space-between; gap: 14px; }
 .tip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 6px; }
 
+.card-top { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; justify-content: space-between; }
+.ext { color: var(--accent); font-size: 12.5px; font-weight: 500; text-decoration: none; white-space: nowrap; }
+.ext:hover { text-decoration: underline; }
+.stack100 { display: flex; gap: 2px; height: 28px; margin-top: 16px; }
+.stack100 span { height: 100%; min-width: 4px; position: relative; }
+.stack100 span:first-child { border-radius: 4px 0 0 4px; }
+.stack100 span:last-child { border-radius: 0 4px 4px 0; }
+.legend b { font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
+.sbars { display: grid; gap: 10px; margin-top: 12px; }
+.sbar { display: grid; grid-template-columns: 136px minmax(0, 1fr) 28px; gap: 10px; align-items: center; font-size: 12.5px; }
+.sbar .name { color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sbar .segs { display: flex; gap: 2px; height: 16px; }
+.sbar .segs span { height: 100%; }
+.sbar .segs span:last-child { border-radius: 0 4px 4px 0; }
+.sbar .v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 500; }
 .hbars { display: grid; gap: 8px; margin-top: 10px; }
 .hbar { display: grid; grid-template-columns: 128px minmax(0, 1fr) 28px; gap: 10px; align-items: center; font-size: 12.5px; }
 .hbar .name { color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -339,13 +357,22 @@ details summary { cursor: pointer; color: var(--accent); font-size: 12px; }
 
     <div class="grid-charts">
       <div class="card">
-        <h2>Pipelines com problema nos últimos 14 dias</h2>
-        <p class="hint">Contagem diária por situação, a partir das coletas salvas.</p>
-        <div class="legend" id="legend-trend"></div>
-        <div class="chart" id="chart-trend"></div>
+        <div class="card-top">
+          <div>
+            <h2>Última execução de cada tabela</h2>
+            <p class="hint">Situação atual dos pipelines, pela tabela de última execução.</p>
+          </div>
+          <!-- Link para o dashboard existente; tendência histórica fica lá. -->
+          <a class="ext" href="https://app.datadoghq.com/dashboard/lists" target="_blank" rel="noopener">Histórico no Datadog ↗</a>
+        </div>
+        <div class="stack100" id="stack-total" role="img"></div>
+        <div class="legend" id="legend-total"></div>
+        <h3 class="eyebrow" style="margin-top:20px">Problemas por etapa</h3>
+        <div class="legend" id="legend-etapa"></div>
+        <div class="sbars" id="bars-etapa"></div>
       </div>
       <div class="card">
-        <h2>Falhas de hoje</h2>
+        <h2>Falhas e travamentos</h2>
         <p class="hint">Falhas e travamentos com dossiê.</p>
         <div class="split">
           <div><h3>Por dataset</h3><div class="hbars" id="bars-ds"></div></div>
@@ -453,13 +480,6 @@ const inp = (ds, t, extra = {}) => ({ team: "meutime", dataset: ds, table_name: 
 const DADOS = {
   regiao: "us-east-2", gerado_em_utc: "2026-10-06 07:02", total_pipelines: 148,
   por_situacao: { FALHA: 11, TRAVADO: 2, NAO_EXECUTOU: 4, SEM_DADOS: 1, EXECUTANDO: 3, OK: 127 },
-  ontem: { FALHA: 4 },
-  historico: {
-    dias: ["23/09","24/09","25/09","26/09","27/09","28/09","29/09","30/09","01/10","02/10","03/10","04/10","05/10","06/10"],
-    FALHA:        [3,2,4,1,2,3,5,2,3,4,2,3,4,11],
-    TRAVADO:      [0,1,0,0,1,0,1,0,0,1,0,1,0,2],
-    NAO_EXECUTOU: [4,3,3,5,4,3,4,4,3,5,4,5,4,4],
-  },
   falhas: [
     ...["tb_aut_transacoes", "tb_aut_estornos", "tb_aut_limites", "tb_aut_bins", "tb_aut_merchants"].map((t, i) => ({
       id: t, dataset: "autorizacao", team: "autorizador", situacao: "FALHA", etapa: "input",
@@ -512,7 +532,10 @@ const DADOS = {
       sfn: "Em execução (RUNNING há 3h22)", aviso: "stderr do step ainda não sincronizado no S3", log: null,
       input: inp("financeiro", "tb_cotacoes_moeda", { stage: "cryptography" }) },
   ],
-  nao_executou: ["tb_fechamento_mensal", "tb_metas_semanais", "tb_campanhas", "tb_rotas_entrega"],
+  nao_executou: [
+    { id: "tb_fechamento_mensal", etapa: "input" }, { id: "tb_metas_semanais", etapa: "input" },
+    { id: "tb_campanhas", etapa: "input" }, { id: "tb_rotas_entrega", etapa: "transformation" },
+  ],
 };
 
 const ACAO_PADRAO = {
@@ -630,10 +653,10 @@ if (location.hash === "#investigacao") abrirAba("investigacao");
 
 /* ===================== ABA 1 ===================== */
 function kpis() {
-  const s = DADOS.por_situacao, d = s.FALHA - DADOS.ontem.FALHA;
+  const s = DADOS.por_situacao, nds = new Set(DADOS.falhas.filter(f => f.situacao === "FALHA").map(f => f.dataset)).size;
   const itens = [
     { lbl: "Saudáveis", c: COR.OK, val: s.OK, sub: `${(s.OK / DADOS.total_pipelines * 100).toFixed(1).replace(".", ",")}% dos ${DADOS.total_pipelines}` },
-    { lbl: "Falhas", c: COR.FALHA, val: s.FALHA, sub: `<b class="${d > 0 ? "delta-up-bad" : "delta-down-good"}">${d > 0 ? "+" : "−"}${Math.abs(d)}</b> vs. ontem`, alert: true },
+    { lbl: "Falhas", c: COR.FALHA, val: s.FALHA, sub: `em ${nds} datasets`, alert: true },
     { lbl: "Incidentes prováveis", c: COR.FALHA, val: GRUPOS.length, sub: `grupos de falha com mesma causa` },
     { lbl: "Travados", c: COR.TRAVADO, val: s.TRAVADO, sub: `acima de 3h em execução` },
     { lbl: "Não executaram", c: COR.NAO_EXECUTOU, val: s.NAO_EXECUTOU, sub: `podem ser não diários` },
@@ -644,45 +667,27 @@ function kpis() {
     <span class="val">${x.val}</span><span class="sub">${x.sub}</span></div>`).join("");
 }
 
-function tendencia() {
-  const H = DADOS.historico, series = ["FALHA", "TRAVADO", "NAO_EXECUTOU"];
-  $("#legend-trend").innerHTML = series.map(s => `<span><i style="background:${COR[s]}"></i>${ROTULO[s]}</span>`).join("");
-  const W = 640, Ht = 220, m = { t: 14, r: 8, b: 26, l: 28 }, iw = W - m.l - m.r, ih = Ht - m.t - m.b;
-  const tot = H.dias.map((_, i) => series.reduce((a, s) => a + H[s][i], 0));
-  const max = Math.ceil(Math.max(...tot) / 4) * 4, y = v => m.t + ih - v / max * ih;
-  const bw = iw / H.dias.length, gap = Math.max(6, bw * 0.32);
-  let svg = `<svg viewBox="0 0 ${W} ${Ht}" role="img" aria-label="Pipelines com problema por dia">`;
-  for (let v = 0; v <= max; v += max / 4) {
-    svg += `<line class="${v === 0 ? "base" : "gridline"}" x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}"/><text x="${m.l - 8}" y="${y(v) + 4}" text-anchor="end">${v}</text>`;
-  }
-  H.dias.forEach((d, i) => {
-    const x = m.l + i * bw;
-    svg += `<rect class="col-hit" data-i="${i}" x="${x}" y="${m.t}" width="${bw}" height="${ih}"/>`;
-    let acc = 0;
-    series.forEach((s, j) => {
-      const v = H[s][i]; if (!v) return;
-      const y0 = y(acc) - (acc ? 2 : 0), y1 = y(acc + v), xl = x + gap / 2, xr = x + bw - gap / 2;
-      const topo = series.slice(j + 1).every(t => !H[t][i]), r = topo ? Math.min(4, y0 - y1, (xr - xl) / 2) : 0;
-      svg += `<path d="M${xl},${y0} V${y1 + r} Q${xl},${y1} ${xl + r},${y1} H${xr - r} Q${xr},${y1} ${xr},${y1 + r} V${y0} Z" fill="${COR[s]}" pointer-events="none"/>`;
-      acc += v;
-    });
-    if (i % 2 === 1) svg += `<text x="${x + bw / 2}" y="${Ht - 8}" text-anchor="middle">${d}</text>`;
-  });
-  const u = H.dias.length - 1;
-  svg += `<text x="${m.l + u * bw + bw / 2}" y="${y(tot[u]) - 6}" text-anchor="middle" style="fill:var(--fg);font-weight:600">${tot[u]}</text></svg><div class="tip" hidden></div>`;
-  const el = $("#chart-trend"); el.innerHTML = svg;
-  const tip = $(".tip", el);
-  $$(".col-hit", el).forEach(r => {
-    r.addEventListener("mouseenter", () => {
-      const i = +r.dataset.i, box = el.getBoundingClientRect(), rb = r.getBoundingClientRect();
-      tip.innerHTML = `<b>${H.dias[i]}</b>` + series.map(s => `<div class="row"><span><i style="background:${COR[s]}"></i>${ROTULO[s]}</span><span class="num">${H[s][i]}</span></div>`).join("")
-        + `<div class="row" style="margin-top:4px"><span>Total</span><b class="num">${tot[i]}</b></div>`;
-      tip.hidden = false;
-      tip.style.left = Math.min(Math.max(rb.left - box.left + rb.width / 2, 80), box.width - 80) + "px";
-      tip.style.top = (rb.top - box.top + 4) + "px";
-    });
-    r.addEventListener("mouseleave", () => { tip.hidden = true; });
-  });
+function situacaoAtual() {
+  const s = DADOS.por_situacao, total = DADOS.total_pipelines;
+  const ordem = ["FALHA", "TRAVADO", "NAO_EXECUTOU", "SEM_DADOS", "EXECUTANDO", "OK"];
+  $("#stack-total").setAttribute("aria-label", ordem.map(k => `${ROTULO[k]}: ${s[k]}`).join(", "));
+  $("#stack-total").innerHTML = ordem.filter(k => s[k]).map(k =>
+    `<span style="flex:${s[k]};background:${COR[k]}" title="${ROTULO[k]}: ${s[k]} de ${total}"></span>`).join("");
+  $("#legend-total").innerHTML = ordem.map(k => `<span><i style="background:${COR[k]}"></i>${ROTULO[k]} <b>${s[k]}</b></span>`).join("");
+
+  const series = ["FALHA", "TRAVADO", "NAO_EXECUTOU"];
+  const itens = [...DADOS.falhas.map(f => ({ etapa: f.etapa, situacao: f.situacao })),
+                 ...DADOS.nao_executou.map(n => ({ etapa: n.etapa, situacao: "NAO_EXECUTOU" }))];
+  const etapas = ["input", "transformation", "cryptography_sm_a", "cryptography_sm_b"];
+  const linhas = etapas.map(e => ({ e, c: Object.fromEntries(series.map(x => [x, itens.filter(i => i.etapa === e && i.situacao === x).length])) }))
+    .map(l => ({ ...l, t: series.reduce((a, x) => a + l.c[x], 0) })).filter(l => l.t);
+  const max = Math.max(...linhas.map(l => l.t));
+  $("#legend-etapa").innerHTML = series.map(x => `<span><i style="background:${COR[x]}"></i>${ROTULO[x]}</span>`).join("");
+  $("#bars-etapa").innerHTML = linhas.map(l => `
+    <div class="sbar"><span class="name">${l.e}</span>
+      <span class="segs" style="width:${l.t / max * 100}%">${series.filter(x => l.c[x]).map(x =>
+        `<span style="flex:${l.c[x]};background:${COR[x]}" title="${l.e} · ${ROTULO[x]}: ${l.c[x]}"></span>`).join("")}</span>
+      <span class="v">${l.t}</span></div>`).join("");
 }
 
 function barras(alvo, pares) {
@@ -710,7 +715,7 @@ function resumo() {
     abertos.add(b.dataset.ir);
     renderGrupos(); abrirAba("investigacao"); window.scrollTo(0, 0);
   }));
-  $("#nao-exec-note").textContent = `Também não executaram hoje (fora dos grupos, sem execução para analisar): ${DADOS.nao_executou.join(", ")}.`;
+  $("#nao-exec-note").textContent = `Também não executaram hoje (fora dos grupos, sem execução para analisar): ${DADOS.nao_executou.map(x => x.id).join(", ")}.`;
 }
 
 /* ===================== ABA 2 ===================== */
@@ -1018,7 +1023,7 @@ function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = fal
 $("#btn-coleta").addEventListener("click", () => toast("No sistema real, isto roda a coleta sem LLM e recarrega o painel."));
 
 /* ---------- inicialização ---------- */
-kpis(); tendencia();
+kpis(); situacaoAtual();
 barras("#bars-ds", contar(DADOS.falhas, "dataset"));
 barras("#bars-cat", contar(DADOS.falhas, "categoria"));
 resumo(); renderFiltros();
@@ -1028,6 +1033,13 @@ abertos.add(gAut.chave);
 gAut.membros.forEach(id => estadoPipe[id] = "aguarda avaliação");
 analises.set("an0", { grupo: gAut, membros: [...gAut.membros], fase: 2, origem: "llm", avaliacao: null });
 renderGrupos(); renderFila();
+
+// Link de contexto do Datadog: ?pipeline=<table_name> abre a investigação no grupo dele.
+try {
+  const alvo = new URLSearchParams(location.search).get("pipeline");
+  const g = alvo && grupoDe(alvo);
+  if (g) { abertos.add(g.chave); if (!bloqueado(alvo)) sel.add(alvo); renderGrupos(); abrirAba("investigacao"); }
+} catch (e) {}
 </script>
 </body>
 </html>
